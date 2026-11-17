@@ -16,6 +16,7 @@ import (
 
 	channeltypesv2 "github.com/cosmos/ibc-go/v11/modules/core/04-channel/v2/types"
 	proverv2 "github.com/lfdt-ibc/ibc/cli/api/v2/prover"
+	"github.com/lfdt-ibc/ibc/cli/internal/config"
 	"github.com/lfdt-ibc/ibc/cli/internal/network"
 	v2 "github.com/lfdt-ibc/ibc/cli/internal/types/v2"
 )
@@ -39,7 +40,7 @@ func New(
 	logger *slog.Logger,
 ) *Prover {
 	return &Prover{
-		requestTimeout: requestTimeout,
+		requestTimeout: requestTimeoutOrDefault(requestTimeout),
 		client: proverv2.NewProverServiceClient(
 			httpClient,
 			url,
@@ -69,12 +70,19 @@ func newHTTPClient(tlsConfig *tls.Config, requestTimeout time.Duration) *http.Cl
 	protocols.SetUnencryptedHTTP2(true)
 
 	return &http.Client{
+		Timeout: requestTimeoutOrDefault(requestTimeout),
 		Transport: &http.Transport{
-			Protocols:             protocols,
-			TLSClientConfig:       tlsConfig,
-			ResponseHeaderTimeout: requestTimeout,
+			Protocols:       protocols,
+			TLSClientConfig: tlsConfig,
 		},
 	}
+}
+
+func requestTimeoutOrDefault(timeout time.Duration) time.Duration {
+	if timeout <= 0 {
+		return config.DefaultRemoteProverRequestTimeout
+	}
+	return timeout
 }
 
 func (p *Prover) target() *proverv2.Client {

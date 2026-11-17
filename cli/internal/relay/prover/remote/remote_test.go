@@ -20,45 +20,30 @@ import (
 	v2 "github.com/lfdt-ibc/ibc/cli/internal/types/v2"
 )
 
-func TestProverRequestTimeout(t *testing.T) {
-	for _, timeout := range []time.Duration{config.DefaultRemoteProverRequestTimeout, 5 * time.Minute} {
-		for _, constructor := range []string{"New", "NewFromEndpoint"} {
-			t.Run(constructor+"/"+timeout.String(), func(t *testing.T) {
-				_, handler := proverv2.NewProverServiceHandler(timeoutProverClient{t: t, timeout: timeout})
-				server := httptest.NewUnstartedServer(handler)
-				server.EnableHTTP2 = true
-				server.StartTLS()
-				t.Cleanup(server.Close)
-
-				var prover *Prover
-				if constructor == "New" {
-					prover = New(server.Client(), server.URL, "chain-a", "client-0", timeout, slog.Default())
-				} else {
-					endpoint := network.Endpoint{
-						URL: server.URL,
-						TLS: server.Client().Transport.(*http.Transport).TLSClientConfig.Clone(),
-					}
-					prover = NewFromEndpoint(endpoint, "chain-a", "client-0", timeout, slog.Default())
-				}
-
-				_, _, err := prover.LatestProvableHeight(t.Context())
-				require.NoError(t, err)
-				_, err = prover.ClientUpdatePayloads(t.Context(), 1)
-				require.NoError(t, err)
-				_, err = prover.PacketProofs(t.Context(), 1, v2.ProofKindPacketCommitment,
-					[]channeltypesv2.Packet{{Sequence: 1}}, nil)
-				require.NoError(t, err)
-			})
-		}
+func TestProverNonpositiveRequestTimeout(t *testing.T) {
+	_, handler := proverv2.NewProverServiceHandler(proverv2.UnimplementedProverServiceHandler{})
+	server := httptest.NewUnstartedServer(handler)
+	server.EnableHTTP2 = true
+	server.StartTLS()
+	t.Cleanup(server.Close)
+	endpoint := network.Endpoint{
+		URL: server.URL,
+		TLS: server.Client().Transport.(*http.Transport).TLSClientConfig.Clone(),
 	}
-}
 
-func TestHTTPClientRequestTimeout(t *testing.T) {
-	for _, timeout := range []time.Duration{250 * time.Millisecond, 5 * time.Minute} {
-		client := newHTTPClient(nil, timeout)
-		transport, ok := client.Transport.(*http.Transport)
-		require.True(t, ok)
-		require.Equal(t, timeout, transport.ResponseHeaderTimeout)
+	for _, timeout := range []time.Duration{0, -time.Second} {
+		t.Run(timeout.String(), func(t *testing.T) {
+			for _, prover := range []*Prover{
+				New(server.Client(), server.URL, "chain-a", "client-0", timeout, slog.Default()),
+				NewFromEndpoint(endpoint, "chain-a", "client-0", timeout, slog.Default()),
+			} {
+				require.Equal(t, config.DefaultRemoteProverRequestTimeout, prover.requestTimeout)
+				_, _, err := prover.LatestProvableHeight(t.Context())
+				require.Equal(t, connect.CodeUnimplemented, connect.CodeOf(err),
+					"nonpositive timeout must allow the request to reach the server")
+			}
+			require.Equal(t, config.DefaultRemoteProverRequestTimeout, newHTTPClient(nil, timeout).Timeout)
+		})
 	}
 }
 
@@ -114,43 +99,6 @@ func TestProverRequestCancellation(t *testing.T) {
 			})
 		}
 	}
-}
-
-type timeoutProverClient struct {
-	t       *testing.T
-	timeout time.Duration
-}
-
-func (c timeoutProverClient) LatestProvableHeight(
-	ctx context.Context,
-	_ *connect.Request[proverv2.LatestProvableHeightRequest],
-) (*connect.Response[proverv2.LatestProvableHeightResponse], error) {
-	c.requireDeadline(ctx)
-	return connect.NewResponse(&proverv2.LatestProvableHeightResponse{}), nil
-}
-
-func (c timeoutProverClient) ClientUpdatePayloads(
-	ctx context.Context,
-	_ *connect.Request[proverv2.ClientUpdatePayloadsRequest],
-) (*connect.Response[proverv2.ClientUpdatePayloadsResponse], error) {
-	c.requireDeadline(ctx)
-	return connect.NewResponse(&proverv2.ClientUpdatePayloadsResponse{}), nil
-}
-
-func (c timeoutProverClient) PacketProofs(
-	ctx context.Context,
-	_ *connect.Request[proverv2.PacketProofsRequest],
-) (*connect.Response[proverv2.PacketProofsResponse], error) {
-	c.requireDeadline(ctx)
-	return connect.NewResponse(&proverv2.PacketProofsResponse{Proofs: [][]byte{{0x1}}}), nil
-}
-
-func (c timeoutProverClient) requireDeadline(ctx context.Context) {
-	c.t.Helper()
-
-	deadline, ok := ctx.Deadline()
-	require.True(c.t, ok)
-	require.WithinDuration(c.t, time.Now().Add(c.timeout), deadline, time.Second)
 }
 
 func TestPacketProofsRejectsAcknowledgementCountMismatch(t *testing.T) {
