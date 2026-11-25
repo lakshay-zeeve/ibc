@@ -3,9 +3,11 @@
 package evm
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"math/big"
+	"strings"
 	"testing"
 
 	"github.com/ethereum/go-ethereum/accounts/abi"
@@ -19,6 +21,61 @@ import (
 	"github.com/cosmos/ibc-contracts/packages/go-abigen/ics26router"
 	"github.com/cosmos/ibc-contracts/packages/go-abigen/ift"
 )
+
+// overlappingRevert encodes bytes[] elements that all alias one payload.
+func overlappingRevert(t testing.TB, count, elementSize int) []byte {
+	t.Helper()
+	contractABI, err := ics26router.ContractMetaData.GetAbi()
+	require.NoError(t, err)
+	customErr := contractABI.Errors["InvalidMerklePrefix"]
+	data := make([]byte, 4+64+count*32+32+elementSize)
+	copy(data, customErr.ID[:4])
+	putWord := func(offset, n int) {
+		binary.BigEndian.PutUint64(data[offset+24:offset+32], uint64(n))
+	}
+	putWord(4, 32)
+	putWord(36, count)
+	for i := range count {
+		putWord(68+i*32, count*32)
+	}
+	putWord(68+count*32, elementSize)
+	for i := 100 + count*32; i < len(data); i++ {
+		data[i] = 0xff
+	}
+	return data
+}
+
+func TestExplainRevertDataInputCap(t *testing.T) {
+	custom := hexutil.MustDecode(revertData(t, ics26router.ContractMetaData, "IBCClientNotFound", "client-0"))
+	standard := append([]byte(nil), custom...)
+	copy(standard, hexutil.MustDecode("0x08c379a0"))
+	for _, tc := range []struct {
+		name, want string
+		data       []byte
+	}{
+		{"custom", "IBCClientNotFound(client-0)", custom},
+		{"standard", "client-0", standard},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// Trailing padding counts toward the cap, along with the selector.
+			data := make([]byte, maxRevertDataBytes)
+			copy(data, tc.data)
+			require.Equal(t, tc.want, ExplainRevertData(data))
+
+			reason := ExplainRevertData(append(data, 0))
+			require.Contains(t, reason, "1025 encoded bytes, truncated")
+			require.Less(t, len(reason), 256)
+		})
+	}
+}
+
+func TestExplainRevertDataOverlappingOffsets(t *testing.T) {
+	data := overlappingRevert(t, 512, 16*1024)
+	reason := ExplainRevertData(data)
+	require.Contains(t, reason, "InvalidMerklePrefix")
+	require.Contains(t, reason, fmt.Sprintf("%d encoded bytes, truncated", len(data)))
+	require.Less(t, len(reason), 256)
+}
 
 type revertError struct {
 	code int
@@ -49,6 +106,11 @@ var namedReverts = []struct {
 	want     string
 }{
 	{ics26router.ContractMetaData, "IBCClientNotFound", []any{"client-0"}, "IBCClientNotFound(client-0)"},
+	{
+		ics26router.ContractMetaData, "InvalidMerklePrefix",
+		[]any{[][]byte{{1, 2}, {3}}},
+		"InvalidMerklePrefix([[1 2] [3]])",
+	},
 	{attestation.ContractMetaData, "ConsensusTimestampNotFound", []any{uint64(7)}, "ConsensusTimestampNotFound(7)"},
 	{ift.ContractMetaData, "RateLimitExceeded", nil, "RateLimitExceeded()"},
 	{ibcmulticall.ContractMetaData, "IBCMulticallCallOutOfGas", []any{big.NewInt(2)}, "IBCMulticallCallOutOfGas(2)"},
@@ -103,6 +165,10 @@ func TestExplainRevertData(t *testing.T) {
 		{"empty", nil, "empty revert data"},
 		{"short", []byte{1, 2}, "0x0102"},
 		{"unknown", hexutil.MustDecode("0xdeadbeef"), "0xdeadbeef"},
+		{
+			"oversized unknown", make([]byte, 1025),
+			"0x" + strings.Repeat("00", 64) + "... (1025 encoded bytes, truncated)",
+		},
 		{"revert string", append(hexutil.MustDecode("0x08c379a0"), message...), "rate limit exceeded"},
 		{"malformed revert", hexutil.MustDecode("0x08c379a0"), "0x08c379a0"},
 		{"panic", hexutil.MustDecode("0x4e487b710000000000000000000000000000000000000000000000000000000000000011"), "arithmetic underflow or overflow"},

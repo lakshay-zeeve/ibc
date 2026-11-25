@@ -19,6 +19,11 @@ import (
 	"github.com/cosmos/ibc-contracts/packages/go-abigen/ift"
 )
 
+const (
+	maxRevertDataBytes = 1024
+	revertPreviewBytes = 64
+)
+
 // revertContracts contains known custom errors from relay calls.
 // One Besu light client verifies both QBFT and IBFT2.
 var revertContracts = []*bind.MetaData{
@@ -45,13 +50,16 @@ func ExplainRevert(err error) error {
 	return errors.Wrap(err, ExplainRevertData(data))
 }
 
-// ExplainRevertData decodes a revert reason, falling back to its raw hex data.
+// ExplainRevertData decodes at most 1 KiB of encoded revert data, including the
+// selector. Larger errors retain a bounded preview and any known custom name.
 func ExplainRevertData(data []byte) string {
 	if len(data) == 0 {
 		return "empty revert data"
 	}
-	if reason, err := abi.UnpackRevert(data); err == nil {
-		return reason
+	if len(data) <= maxRevertDataBytes {
+		if reason, err := abi.UnpackRevert(data); err == nil {
+			return reason
+		}
 	}
 	if len(data) < 4 {
 		return hexutil.Encode(data)
@@ -65,9 +73,12 @@ func ExplainRevertData(data []byte) string {
 		if idErr != nil {
 			continue
 		}
+		if len(data) > maxRevertDataBytes {
+			return customErr.Name + " (" + revertDataPreview(data) + ")"
+		}
 		args, unpackErr := customErr.Inputs.Unpack(data[4:])
 		if unpackErr != nil {
-			return fmt.Sprintf("%s (malformed data: %s)", customErr.Name, hexutil.Encode(data))
+			return fmt.Sprintf("%s (malformed data: %s)", customErr.Name, revertDataPreview(data))
 		}
 		values := make([]string, len(args))
 		for i, arg := range args {
@@ -75,5 +86,15 @@ func ExplainRevertData(data []byte) string {
 		}
 		return fmt.Sprintf("%s(%s)", customErr.Name, strings.Join(values, ", "))
 	}
-	return hexutil.Encode(data)
+	return revertDataPreview(data)
+}
+
+func revertDataPreview(data []byte) string {
+	if len(data) <= revertPreviewBytes {
+		return hexutil.Encode(data)
+	}
+	return fmt.Sprintf(
+		"%s... (%d encoded bytes, truncated)",
+		hexutil.Encode(data[:revertPreviewBytes]), len(data),
+	)
 }

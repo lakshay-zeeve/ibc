@@ -64,6 +64,9 @@ type RelayerClientEnd struct {
 	ClientID   string
 	ClientType clientkind.Kind
 	AutoRelay  bool
+	// AutoUpdateInterval, when positive, has the relayer update the client
+	// on this interval whether or not packets flow.
+	AutoUpdateInterval time.Duration
 }
 
 // RelayerConnection is a reciprocal on-chain client pair.
@@ -135,7 +138,7 @@ func buildRelayerFileConfig(cfg RelayerConfig) (fileConfig, error) {
 		DB:            dbConfig{Type: dbTypeSQLite, URL: cfg.DBPath},
 		Observability: otelFileConfig(cfg.Observability),
 		Signers:       []signerConfig{processSigner},
-		// The default 5s dispatch poll is mainnet-shaped; harness awaits are sub-second.
+		// The default 1s dispatch poll is mainnet-shaped; harness awaits are sub-second.
 		Relayer: &relayerFileConfig{
 			DispatchPollInterval: "100ms",
 			ClearOnStart:         cfg.ClearOnStart,
@@ -193,6 +196,9 @@ func relayerClientEndConfig(end RelayerClientEnd, signer, proverURL string) Clie
 		Signer:    signer,
 		Type:      end.ClientType,
 		AutoRelay: autoRelay(end.AutoRelay),
+	}
+	if end.AutoUpdateInterval > 0 {
+		result.AutoUpdate = &AutoUpdateFileConfig{Interval: end.AutoUpdateInterval.String()}
 	}
 	if proverURL != "" {
 		result.RemoteProver = &RemoteProverFileConfig{URL: proverURL}
@@ -270,6 +276,7 @@ type ClientEndFileConfig struct {
 	Type         clientkind.Kind         `yaml:"type"`
 	RemoteProver *RemoteProverFileConfig `yaml:"remoteProver,omitempty"`
 	AutoRelay    *AutoRelayFileConfig    `yaml:"autoRelay,omitempty"`
+	AutoUpdate   *AutoUpdateFileConfig   `yaml:"autoUpdate,omitempty"`
 }
 
 type RemoteProverFileConfig struct {
@@ -278,6 +285,10 @@ type RemoteProverFileConfig struct {
 
 type AutoRelayFileConfig struct {
 	Enabled bool `yaml:"enabled"`
+}
+
+type AutoUpdateFileConfig struct {
+	Interval string `yaml:"interval"`
 }
 
 func durationYAML(d time.Duration) string {

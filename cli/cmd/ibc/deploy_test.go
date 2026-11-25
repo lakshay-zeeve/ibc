@@ -194,7 +194,7 @@ func TestDeployCorePopulateConfig(t *testing.T) {
 			require.NoError(t, err)
 			cfg.Chains[0].EVM.ICS26Router = m.Core.Router
 			cfg.Chains[0].EVM.IBCMulticall = m.Core.Multicall
-			require.Equal(t, cfg, loaded)
+			require.EqualExportedValues(t, cfg, loaded)
 			populated, err := os.ReadFile(path)
 			require.NoError(t, err)
 			require.NoError(t, deployCore(cmd, nil))
@@ -248,8 +248,8 @@ func TestRenderRelayConfig(t *testing.T) {
 		CounterpartyChainID: "9", CounterpartyClientID: "cli-1-9",
 	})
 	// a second, custom-named connection between the same chain pair --
-	// exercises the alias seqno suffix, and reuses the same attestor address
-	// watching chain 2 to exercise cross-connection attestor deduplication.
+	// reuses the same attestor address watching chain 2 to exercise
+	// cross-connection attestor deduplication.
 	a.UpsertClient(manifest.Client{
 		ClientID: "custom-a", Address: "0xca2",
 		CounterpartyChainID: "2", CounterpartyClientID: "custom-b",
@@ -316,7 +316,7 @@ func TestRenderRelayConfig(t *testing.T) {
 	require.True(t, *conn.ClientB.AutoRelay.Enabled)
 	require.Equal(t, "signer-b", conn.ClientB.Signer)
 
-	// Reconciliation allocates unique aliases for new connections.
+	// Every connection between the same chain pair gets the same alias.
 	conn2 := out.Connections[1]
 	require.Equal(t, "1-2", conn2.Alias)
 	require.Equal(t, "custom-a", conn2.ClientA.ClientID)
@@ -381,7 +381,7 @@ func TestRenderConfigEmitsComments(t *testing.T) {
 	require.NoError(t, err)
 
 	rendered := captureStdout(t, func() {
-		require.NoError(t, config.PrintYAMLWithComments(merged, config.CollectComments(merged)))
+		require.NoError(t, merged.WriteYAMLWithComments(os.Stdout, config.CollectComments(merged)))
 	})
 
 	require.Contains(t, rendered, `signer: "" # TODO: signers[] alias that submits relay txs on chainA`)

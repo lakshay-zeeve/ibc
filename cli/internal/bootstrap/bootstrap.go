@@ -8,6 +8,7 @@ import (
 
 	"github.com/lfdt-ibc/ibc/cli/internal/chains"
 	"github.com/lfdt-ibc/ibc/cli/internal/config"
+	"github.com/lfdt-ibc/ibc/cli/internal/relay/clientupdater"
 	"github.com/lfdt-ibc/ibc/cli/internal/relay/dispatch"
 	"github.com/lfdt-ibc/ibc/cli/internal/relay/pipeline"
 	"github.com/lfdt-ibc/ibc/cli/internal/relay/prover"
@@ -69,7 +70,7 @@ func BuildRelayer(cfg config.Config) (*Services, error) {
 		return nil, err
 	}
 
-	// Dual mode: if .attestor config is provided, then we can run both relayer and attestor in the same
+	// Dual mode: if attestors[] has a local entry, then we can run both relayer and attestor in the same
 	// process. This might be useful for PoC/testing environments or when an operator wants to run the relayer
 	// and one of attestors in the same process.
 	var attestorService *attestor.Service
@@ -123,8 +124,14 @@ func BuildRelayer(cfg config.Config) (*Services, error) {
 		return nil, err
 	}
 
+	// Client updates on a fixed interval, so clients do not expire while no packets flow.
+	updaters, err := clientupdater.NewSetFromConfig(cfg, provers, txBuilders, txSubmitters, logger)
+	if err != nil {
+		return nil, err
+	}
+
 	// Services
-	relayerService := relayer.New(cfg, db, clientSet, dispatcher, watchers)
+	relayerService := relayer.New(cfg, db, clientSet, dispatcher, watchers, updaters)
 
 	// Handlers
 	relayerHandler := server.NewRelayerHandler(relayerService)
@@ -148,7 +155,7 @@ func BuildRelayer(cfg config.Config) (*Services, error) {
 	}, nil
 }
 
-// BuildAttestors converts config into a runnable attestor process with all of the deps provisioned
+// BuildAttestor converts config into a runnable attestor process with all of the deps provisioned
 func BuildAttestor(cfg config.Config) (*Services, error) {
 	ctx := context.Background()
 	logger := slog.With("module", "bootstrap")
